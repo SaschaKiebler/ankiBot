@@ -1,4 +1,6 @@
-/node_modules
 .env
 build
 md-files
+*__pycache__
+*.venv
+*uv.lock
