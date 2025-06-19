@@ -10,22 +10,29 @@
   },
   "dependencies": {
     "@langchain/google-genai": "^0.2.12",
-    "@langchain/langgraph": "^0.3.3",
+    "@langchain/langgraph": "^0.3.4",
     "@langchain/mcp-adapters": "^0.5.2",
+    "archiver": "^7.0.1",
     "axios": "^1.10.0",
+    "jszip": "^3.10.1",
     "langchain": "^0.3.28",
+    "langsmith": "^0.3.33",
     "next": "15.3.3",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "sql.js": "^1.13.0"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3",
     "@tailwindcss/postcss": "^4",
+    "@types/archiver": "^6.0.3",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@types/sql.js": "^1.4.9",
     "eslint": "^9",
     "eslint-config-next": "15.3.3",
+    "script-loader": "^0.7.2",
     "tailwindcss": "^4",
     "typescript": "^5"
   }

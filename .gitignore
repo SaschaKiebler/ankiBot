@@ -4,3 +4,4 @@ md-files
 *__pycache__
 *.venv
 *uv.lock
+*venv
