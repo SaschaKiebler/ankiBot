@@ -37,7 +37,7 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
-MAX_WORKERS = 10
+MAX_WORKERS = 50
 
 class GoogleGenerativeAI:
     def __init__(self):
@@ -53,7 +53,7 @@ class GoogleGenerativeAI:
             # Create the prompt
             system_prompt = """You are a helpful assistant that extracts text and tables from images. 
             Return the content in clean markdown format. For tables, use markdown table syntax. 
-            Preserve the original structure as much as possible. only answer with the content."""
+            Preserve the original structure as much as possible but dont include any additional formatting like a lot of whitespace or dots or underscores. only answer with the content."""
             
             # Create the message with the image
             messages = [
@@ -74,7 +74,22 @@ class GoogleGenerativeAI:
             
             # Get the response
             response = await self.chat.agenerate([messages])
-            return response.generations[0][0].text
+            extracted_text = response.generations[0][0].text
+            
+            # Clean up the extracted text
+            if extracted_text:
+                # Replace multiple dots (3 or more) with just three dots
+                import re
+                cleaned_text = re.sub(r'\.{3,}', '...', extracted_text)
+                # remove all underscores that are not between two words
+                cleaned_text = re.sub(r'(?<!\w)_(?!\w)', '', cleaned_text)
+                # remove all ----
+                cleaned_text = re.sub(r'----', '', cleaned_text)
+                # Remove excessive whitespace (more than 2 newlines or spaces)
+                cleaned_text = re.sub(r'\n{3,}', '\n\n', cleaned_text)
+                cleaned_text = re.sub(r' {2,}', ' ', cleaned_text)
+                return cleaned_text.strip()
+            return extracted_text
             
         except Exception as e:
             print(f"Error in LangChain Google Generative AI: {str(e)}")
@@ -447,4 +462,4 @@ async def get_job_result_markdown(job_id: str):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8001)

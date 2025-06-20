@@ -5,6 +5,15 @@ import { z } from "zod";
 import { tool } from "@langchain/core/tools";
 import { NextRequest, NextResponse } from 'next/server';
 import axios from "axios";
+import { EventEmitter } from 'events';
+
+// Increase max listeners to prevent memory leak warnings
+EventEmitter.defaultMaxListeners = 20;
+
+export const LANGSMITH_API_KEY = process.env.LANGSMITH_API_KEY;
+export const LANGSMITH_PROJECT_NAME = process.env.LANGSMITH_PROJECT_NAME;
+export const LANGSMITH_API_URL = process.env.LANGSMITH_API_URL;
+export const LANGCHAIN_CALLBACKS_BACKGROUND=true;
 
 export async function POST(request: NextRequest) {
 // get the api keys
@@ -28,7 +37,7 @@ form.append('file', file, file.name);
 
 // Create the parsing job
 const createJobResponse = await axios.post(
-    'http://localhost:8000/api/v1/parsing/upload',
+    'http://localhost:8001/api/v1/parsing/upload',
     form,
     {
         headers: {
@@ -47,7 +56,7 @@ let jobResponse;
 while (jobStatus !== 'SUCCESS' && jobStatus !== 'FAILED') {
     try {
         jobResponse = await axios.get(
-            `http://localhost:8000/api/v1/parsing/job/${job_id}`
+            `http://localhost:8001/api/v1/parsing/job/${job_id}`
         );
         jobStatus = jobResponse.data.status;
         console.log(`Job status: ${jobStatus}`);
@@ -67,7 +76,7 @@ while (jobStatus !== 'SUCCESS' && jobStatus !== 'FAILED') {
 
 // Get the markdown result
 const resultResponse = await axios.get(
-    `http://localhost:8000/api/v1/parsing/job/${job_id}/result/markdown`,
+    `http://localhost:8001/api/v1/parsing/job/${job_id}/result/markdown`,
     {
         responseType: 'text'
     }
@@ -173,7 +182,7 @@ const structureIntoChaptersAgent = createReactAgent({
 const qaAgent = createReactAgent({
   llm: llm_advanced,
   tools: [getChapterTool, saveQATool],
-  prompt: "the user will provide a list of chapters and you have to create a qa file for each chapter. use the get_chapter tool to get the chapter content and the save_qa tool to save the qa file. make sure to get each chapter step by step and create a qa file for each chapter with qa pairs that cover all the topics in the chapter. allways write the qa pairs in german."
+  prompt: "the user will provide a list of chapters and you have to create a qa file for each chapter that is useful to learn so a.e. dont create a qafile for the Inhaltsverzeichnis. use the get_chapter tool to get the chapter content and the save_qa tool to save the qa file. make sure to get each chapter step by step and create a qa file for each chapter with qa pairs that cover all the topics in the chapter. allways write the qa pairs in german. get back to the user only when you finished for all chapters."
 });
 
 
@@ -181,7 +190,8 @@ const qaAgentResponse = await qaAgent.invoke({
   messages: [{ role: "user", content: `the chapters are: ${chapterKeys.join(',\n')}` }],
 }, {
   recursionLimit: 100,
-});
+
+} );
 
 console.log(qaAgentResponse.structuredResponse);
 
