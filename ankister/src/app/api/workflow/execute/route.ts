@@ -1,11 +1,16 @@
-import { MultiServerMCPClient } from "@langchain/mcp-adapters";
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { createReactAgent } from "@langchain/langgraph/prebuilt";
 import { z } from "zod";
 import { tool } from "@langchain/core/tools";
+import { AIMessage, BaseMessage, HumanMessage, SystemMessage } from "@langchain/core/messages";
+import { RunnableConfig } from "@langchain/core/runnables";
+import { END, START, StateGraph } from "@langchain/langgraph";
+import { ToolNode } from "@langchain/langgraph/prebuilt";
 import { NextRequest, NextResponse } from 'next/server';
 import axios from "axios";
 import { EventEmitter } from 'events';
+import dotenv from "dotenv";
+dotenv.config();
 
 // Increase max listeners to prevent memory leak warnings
 EventEmitter.defaultMaxListeners = 20;
@@ -95,107 +100,131 @@ const pagesList = pages.map((page: string) => page.slice(0, 80)+ '...\n\n');
 // create a markdown string from the list
 const pagesListMarkdown = pagesList.join('\n\n');
 
-let chapters: { [key: string]: string } = {};
+// New State Definition
+type Chapter = {
+  name: string;
+  content: string;
+};
 
-const createChapterTool = tool(
-    async (input: { start_page: number; end_page: number; chapter_name: string }) => {
-        for (let i = input.start_page; i <= input.end_page; i++) {
-            chapters[input.chapter_name] += pages[i];
-        }
-        return `created chapter from pages ${input.start_page} to ${input.end_page}`;
-    },
-    {
-      name: "create_chapter",
-      schema: z.object({
-        start_page: z.number().describe("The start page of the chapter"),
-        end_page: z.number().describe("The end page of the chapter"),
-        chapter_name: z.string().describe("The name of the chapter"),
-      }),
-      description: "Create a chapter from the pages between start_page and end_page.",
-    }
-  );
+type QAPair = {
+  question: string;
+  answer: string;
+};
 
-const getChapterTool = tool(
-    async (input: { chapter_name: string }) => {
-        return chapters[input.chapter_name];
-    },
-    {
-      name: "get_chapter",
-      schema: z.object({
-        chapter_name: z.string().describe("The exact name of the chapter"),
-      }),
-      description: "Get the chapter with the exact name.",
-    }
-  );
+const channels = {
+  chapters: {
+    value: (_: Chapter[], y: Chapter[]) => y,
+    default: () => [],
+  },
+  qa_pairs: {
+    value: (x: QAPair[], y: QAPair[]) => x.concat(y),
+    default: () => [],
+  },
+  markdown_pages: {
+    value: (_: string[], y: string[]) => y,
+    default: () => [],
+  }
+};
 
-let qaList: {question: string, answer: string}[] = [];
+type GraphState = {
+  chapters: Chapter[];
+  qa_pairs: QAPair[];
+  markdown_pages: string[];
+};
 
-const saveQATool = tool(
-    async (input: { qa_list: {question: string, answer: string}[] }) => {
-        qaList.push(...input.qa_list);
-        return "qa saved";
-    },
-    {
-      name: "save_qa",
-      schema: z.object({
-        qa_list: z.array(z.object({
-          question: z.string().describe("The question"),
-          answer: z.string().describe("The answer"),
-        })).describe("The qa list"),
-      }),
-      description: "Save the qa_pairs.",
-    }
-  );
+// LLM with structured output for chapters
+const chapterSchema = z.object({
+  chapters: z.array(
+    z.object({
+      chapter_name: z.string().describe("The name of the chapter"),
+      start_page: z.number().describe("The start page number of the chapter, 1-indexed"),
+      end_page: z.number().describe("The end page number of the chapter, 1-indexed"),
+    })
+  ).describe("An array of chapters found in the document"),
+});
 
-// declare llm
 const llm_advanced = new ChatGoogleGenerativeAI({
+  model: "gemini-2.5-pro-preview-06-05",
+  apiKey: apiKey,
+  verbose: true,
+}).withStructuredOutput(chapterSchema);
+
+// LLM for QA generation
+const qaSchema = z.object({
+  qa_pairs: z.array(
+    z.object({
+      question: z.string().describe("The generated question"),
+      answer: z.string().describe("The corresponding answer"),
+    })
+  ).describe("An array of question-answer pairs"),
+});
+
+const qa_llm = new ChatGoogleGenerativeAI({
     model: "gemini-2.5-pro-preview-06-05",
     apiKey: apiKey,
     verbose: true,
+}).withStructuredOutput(qaSchema);
+
+
+// Node to create chapters
+const createChaptersNode = async (state: GraphState): Promise<Partial<GraphState>> => {
+  console.log("--- Creating Chapters ---");
+  
+  const pagesList = state.markdown_pages.map((page: string, index: number) => `Page ${index + 1}: ${page.slice(0, 150)}...\n\n`);
+  const pagesListMarkdown = pagesList.join('\n');
+
+  const result = await llm_advanced.invoke([
+    new SystemMessage("You are an expert at analyzing documents and identifying the main chapters. Extract the chapters with their start and end pages based on the provided table of contents and page snippets. The page numbers are 1-indexed. dont create chapters for the unimportant pages like tables of contents, indexes, etc."),
+    new HumanMessage(pagesListMarkdown),
+  ]);
+
+  const chapters = result.chapters.map(chapter => {
+    let content = "";
+    // pages array is 0-indexed, so we subtract 1 from the 1-indexed start_page
+    for (let i = chapter.start_page - 1; i < chapter.end_page; i++) {
+        if (state.markdown_pages[i]) {
+            content += state.markdown_pages[i] + "\n\n";
+        }
+    }
+    return { name: chapter.chapter_name, content: content };
   });
 
-const llm_light = new ChatGoogleGenerativeAI({
-    model: "gemini-2.5-flash",
-    apiKey: apiKey,
-    verbose: true,
-  });
+  console.log(`--- Found ${chapters.length} chapters ---`);
+  return { chapters };
+};
 
-// give the markdown to the structureIntoChapters Agent
-const structureIntoChaptersAgent = createReactAgent({
-    llm: llm_advanced,
-    tools: [createChapterTool],
-    responseFormat: z.object({
-      message: z.string(),
-    }),
-    prompt: "Split the preview file into chapters and use the tool for each chapter."
-  });
+// Node to generate QA pairs in parallel
+const qaGeneratorNode = async (state: GraphState): Promise<Partial<GraphState>> => {
+    console.log(`--- Generating Q&A for ${state.chapters.length} chapters in parallel ---`);
 
-  const structureIntoChaptersAgentResponse = await structureIntoChaptersAgent.invoke({
-    messages: [{ role: "user", content: pagesListMarkdown }],
-  });
+    const qaPromises = state.chapters.map(chapter => {
+        console.log(`--- Starting QA generation for chapter: ${chapter.name} ---`);
+        return qa_llm.invoke([
+            new SystemMessage("You are an expert in creating high-quality question-answer pairs for learning from a given text. The questions should be meaningful and the answers concise and accurate. focus on facts, legal terms, technical knowledge and definitions. the user will learn with the qapairs and will not see the text. Respond in German."),
+            new HumanMessage(`Generate question-answer pairs for the following chapter content:\n\nCHAPTER: ${chapter.name}\n\nCONTENT:\n${chapter.content}`),
+        ]);
+    });
 
-  console.log(structureIntoChaptersAgentResponse.structuredResponse);
+    const results = await Promise.all(qaPromises);
+    const all_qa_pairs = results.flatMap(result => result.qa_pairs);
 
-  const chapterKeys = Object.keys(chapters);
-  console.log(chapterKeys);
-        
-const qaAgent = createReactAgent({
-  llm: llm_advanced,
-  tools: [getChapterTool, saveQATool],
-  prompt: "the user will provide a list of chapters and you have to create a qa file for each chapter that is useful to learn so a.e. dont create a qafile for the Inhaltsverzeichnis. use the get_chapter tool to get the chapter content and the save_qa tool to save the qa file. make sure to get each chapter step by step and create a qa file for each chapter with qa pairs that cover all the topics in the chapter. allways write the qa pairs in german. get back to the user only when you finished for all chapters."
-});
+    console.log(`--- Generated a total of ${all_qa_pairs.length} Q&A pairs ---`);
+    return { qa_pairs: all_qa_pairs };
+};
 
 
-const qaAgentResponse = await qaAgent.invoke({
-  messages: [{ role: "user", content: `the chapters are: ${chapterKeys.join(',\n')}` }],
-}, {
-  recursionLimit: 100,
+// Construct Graph
+const workflow = new StateGraph<GraphState>({ channels })
+  .addNode("create_chapters", createChaptersNode)
+  .addNode("generate_qa", qaGeneratorNode);
 
-} );
+workflow.addEdge(START, "create_chapters");
+workflow.addEdge("create_chapters", "generate_qa");
+workflow.addEdge("generate_qa", END);
 
-console.log(qaAgentResponse.structuredResponse);
+const graph = workflow.compile();
 
+const finalState = await graph.invoke({ markdown_pages: pages });
 
-
-return NextResponse.json({qaList}, { status: 200 });
+return NextResponse.json({ qaList: finalState.qa_pairs }, { status: 200 });
 }

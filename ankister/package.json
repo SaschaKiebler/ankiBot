@@ -14,6 +14,7 @@
     "@langchain/mcp-adapters": "^0.5.2",
     "archiver": "^7.0.1",
     "axios": "^1.10.0",
+    "dotenv": "^16.5.0",
     "jszip": "^3.10.1",
     "langchain": "^0.3.28",
     "langsmith": "^0.3.33",

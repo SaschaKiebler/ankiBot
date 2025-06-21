@@ -37,7 +37,7 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
-MAX_WORKERS = 50
+MAX_WORKERS = 100
 
 class GoogleGenerativeAI:
     def __init__(self):
